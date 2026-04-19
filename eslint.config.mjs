@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "rust-addon/index.js",
+    "rust-addon/index.d.ts",
+    "rust-addon/target/**",
+    "rust-addon/*.node",
   ]),
 ]);
 

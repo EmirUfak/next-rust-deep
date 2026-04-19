@@ -2,16 +2,34 @@
   "name": "next-rust-deep",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "rust-addon"
+  ],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "predev": "bun run build:rust",
+    "dev": "node ./node_modules/next/dist/bin/next dev --webpack",
+    "prebuild": "bun run build:rust",
+    "build": "node ./node_modules/next/dist/bin/next build --webpack",
+    "start": "node ./node_modules/next/dist/bin/next start",
+    "build:rust": "bun run --cwd rust-addon build",
+    "lint": "bun run lint:ts && bun run rust:clippy",
+    "lint:ts": "eslint .",
+    "test": "vitest run && bun run rust:test",
+    "test:watch": "vitest --watch",
+    "format": "prettier . --write && cargo fmt --manifest-path rust-addon/Cargo.toml --all",
+    "format:check": "prettier . --check",
+    "rust:test": "cargo test --manifest-path rust-addon/Cargo.toml",
+    "rust:fmt:check": "cargo fmt --manifest-path rust-addon/Cargo.toml --all -- --check",
+    "rust:clippy": "cargo clippy --manifest-path rust-addon/Cargo.toml --all-targets -- -D warnings -D clippy::pedantic",
+    "rust:audit": "cargo audit"
   },
   "dependencies": {
+    "@next-rust-deep/native-addon": "workspace:*",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "server-only": "^0.0.1",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -20,8 +38,11 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "prettier": "^3.6.2",
+    "prettier-plugin-tailwindcss": "^0.7.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.0.17"
   },
   "ignoreScripts": [
     "sharp",

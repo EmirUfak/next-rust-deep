@@ -1,0 +1,6 @@
+.next
+node_modules
+bun.lock
+rust-addon/target
+rust-addon/*.node
+rust-addon/node_modules
