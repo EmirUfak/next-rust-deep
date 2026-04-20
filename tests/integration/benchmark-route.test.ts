@@ -4,7 +4,7 @@ vi.mock("server-only", () => ({}));
 
 describe("benchmark route contract", () => {
   it("returns structured payload for js benchmark", async () => {
-    const { POST } = await import("@/app/api/benchmark/route");
+    const { POST } = await import("../../src/app/api/benchmark/route");
 
     const request = new Request("http://localhost/api/benchmark", {
       method: "POST",
@@ -27,13 +27,19 @@ describe("benchmark route contract", () => {
       runs: Array<{ implementation: string; durationMs: number }>;
       algorithm: string;
       iterations: number;
+      rustBatching: string;
     };
 
     expect(response.status).toBe(200);
     expect(payload.algorithm).toBe("prime-count");
     expect(payload.iterations).toBe(2);
+    expect(payload.rustBatching).toBe("native");
     expect(Array.isArray(payload.runs)).toBe(true);
     expect(payload.runs[0]?.implementation).toBe("js");
     expect(typeof payload.runs[0]?.durationMs).toBe("number");
+    expect(payload.runs[0]).toMatchObject({
+      computeMs: expect.any(Number),
+      transferMs: 0,
+    });
   });
 });

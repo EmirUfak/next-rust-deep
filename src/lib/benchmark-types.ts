@@ -32,6 +32,10 @@ export type BenchmarkMode = "js" | "rust" | "compare";
 
 export type BenchmarkImplementation = "js" | "rust";
 
+export type MatrixResultMode = "full" | "summary";
+
+export type RustBatchingMode = "none" | "native";
+
 export interface BenchmarkWorkload {
   limit?: number;
   matrixSize?: number;
@@ -43,6 +47,8 @@ export interface BenchmarkRequestBody {
   implementation: BenchmarkMode;
   iterations: number;
   timeoutMs?: number;
+  resultMode?: MatrixResultMode;
+  rustBatching?: RustBatchingMode;
   workload: BenchmarkWorkload;
 }
 
@@ -51,6 +57,11 @@ export interface BenchmarkRunResult {
   inputSize: number;
   resultSummary: string;
   durationMs: number;
+  computeMs?: number | null;
+  transferMs?: number | null;
+  batchMode?: RustBatchingMode;
+  callbackCalls?: number;
+  resultMode?: MatrixResultMode;
   error?: string;
 }
 
@@ -64,6 +75,8 @@ export interface BenchmarkResponseBody {
   requestId: string;
   algorithm: BenchmarkAlgorithm;
   iterations: number;
+  rustBatching: RustBatchingMode;
+  resultMode?: MatrixResultMode;
   runs: BenchmarkRunResult[];
   addon: AddonHealth;
   comparison?: {

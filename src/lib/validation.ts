@@ -44,11 +44,24 @@ export const benchmarkRequestSchema = z
       .min(WORKLOAD_LIMITS.timeoutMs.min)
       .max(WORKLOAD_LIMITS.timeoutMs.max)
       .optional(),
+    resultMode: z.enum(["full", "summary"]).optional(),
+    rustBatching: z.enum(["none", "native"]).optional(),
     workload: workloadSchema,
   })
   .strict()
   .superRefine((value, context) => {
     validateWorkloadByAlgorithm(value.algorithm, value.workload, context);
+
+    if (
+      value.algorithm !== "matrix-multiply" &&
+      typeof value.resultMode === "string"
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "resultMode can only be used with matrix-multiply algorithm.",
+        path: ["resultMode"],
+      });
+    }
   });
 
 function validateWorkloadByAlgorithm(

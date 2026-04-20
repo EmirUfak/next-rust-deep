@@ -1,20 +1,49 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   type AddonHealth,
   type BenchmarkAlgorithm,
-  type BenchmarkMode,
+  type BenchmarkRequestBody,
   type BenchmarkResponseBody,
+  type BenchmarkRunResult,
+  type MatrixResultMode,
+  type RustBatchingMode,
   WORKLOAD_LIMITS,
 } from "@/lib/benchmark-types";
 
-const algorithmOptions: Array<{ value: BenchmarkAlgorithm; label: string }> = [
-  { value: "prime-count", label: "Prime Counting" },
-  { value: "matrix-multiply", label: "Matrix Multiply" },
-  { value: "dot-product", label: "Vector Dot Product" },
-];
+interface CaseResult {
+  jsTime: number | null;
+  rustTime: number | null;
+  jsComputeMs: number | null;
+  rustComputeMs: number | null;
+  jsTransferMs: number | null;
+  rustTransferMs: number | null;
+  jsSummary: string | null;
+  rustSummary: string | null;
+  speedup: number | null;
+  rustBatchMode: RustBatchingMode | null;
+  rustCallbackCalls: number | null;
+  error: string | null;
+  requestId: string | null;
+}
+
+const emptyCaseResult: CaseResult = {
+  jsTime: null,
+  rustTime: null,
+  jsComputeMs: null,
+  rustComputeMs: null,
+  jsTransferMs: null,
+  rustTransferMs: null,
+  jsSummary: null,
+  rustSummary: null,
+  speedup: null,
+  rustBatchMode: null,
+  rustCallbackCalls: null,
+  error: null,
+  requestId: null,
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -29,22 +58,151 @@ function parseIntSafe(value: string, fallback: number): number {
   return parsed;
 }
 
+function findRun(
+  runs: BenchmarkRunResult[],
+  implementation: "js" | "rust",
+): BenchmarkRunResult | undefined {
+  return runs.find((run) => run.implementation === implementation);
+}
+
+function calculateSpeedup(
+  jsTime: number | null,
+  rustTime: number | null,
+): number | null {
+  if (jsTime === null || rustTime === null || rustTime === 0) {
+    return null;
+  }
+
+  return jsTime / rustTime;
+}
+
+function parseArraySummary(value: string): {
+  length: number;
+  first: number;
+  checksum: number;
+} | null {
+  const match = /^len=(\d+), first=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?), checksum=([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$/.exec(
+    value.trim(),
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    length: Number.parseInt(match[1], 10),
+    first: Number.parseFloat(match[2]),
+    checksum: Number.parseFloat(match[3]),
+  };
+}
+
+function nearlyEqual(left: number, right: number, epsilon = 0.01): boolean {
+  return Math.abs(left - right) <= epsilon;
+}
+
+function getParityLabel(result: CaseResult): string {
+  if (!result.jsSummary || !result.rustSummary) {
+    return "n/a";
+  }
+
+  if (result.jsSummary === result.rustSummary) {
+    return "match";
+  }
+
+  const jsSummary = parseArraySummary(result.jsSummary);
+  const rustSummary = parseArraySummary(result.rustSummary);
+
+  if (!jsSummary || !rustSummary) {
+    return "mismatch";
+  }
+
+  if (jsSummary.length !== rustSummary.length) {
+    return "mismatch";
+  }
+
+  return nearlyEqual(jsSummary.first, rustSummary.first) &&
+    nearlyEqual(jsSummary.checksum, rustSummary.checksum)
+    ? "match"
+    : "mismatch";
+}
+
+function getSpeedupLabel(
+  jsTime: number | null,
+  rustTime: number | null,
+): string {
+  if (
+    jsTime === null ||
+    rustTime === null ||
+    jsTime <= 0 ||
+    rustTime <= 0
+  ) {
+    return "";
+  }
+
+  const displayedJs = Number(jsTime.toFixed(1));
+  const displayedRust = Number(rustTime.toFixed(1));
+
+  if (displayedJs === displayedRust) {
+    return "JS and Rust are effectively equal.";
+  }
+
+  if (displayedRust < displayedJs) {
+    return `Rust is ${(jsTime / rustTime).toFixed(1)}x faster.`;
+  }
+
+  return `JS is ${(rustTime / jsTime).toFixed(1)}x faster.`;
+}
+
+function shortRequestId(requestId: string | null): string {
+  if (!requestId) {
+    return "-";
+  }
+
+  if (requestId.length <= 20) {
+    return requestId;
+  }
+
+  return `${requestId.slice(0, 8)}...${requestId.slice(-8)}`;
+}
+
+function formatTiming(value: number | null): string {
+  if (value === null) {
+    return "n/a";
+  }
+
+  return `${value.toFixed(2)} ms`;
+}
+
 export function BenchmarkConsole() {
-  const [algorithm, setAlgorithm] = useState<BenchmarkAlgorithm>("prime-count");
   const [primeLimit, setPrimeLimit] = useState(650_000);
+  const [primeIterations, setPrimeIterations] = useState(3);
+
   const [matrixSize, setMatrixSize] = useState(96);
-  const [vectorSize, setVectorSize] = useState(350_000);
-  const [iterations, setIterations] = useState(3);
+  const [matrixIterations, setMatrixIterations] = useState(3);
+
+  const [vectorSize, setVectorSize] = useState(1_200_000);
+  const [dotIterations, setDotIterations] = useState(3);
+
   const [timeoutMs, setTimeoutMs] = useState<number>(
     WORKLOAD_LIMITS.timeoutMs.default,
   );
+  const [matrixResultMode, setMatrixResultMode] =
+    useState<MatrixResultMode>("summary");
+  const [rustBatching, setRustBatching] =
+    useState<RustBatchingMode>("native");
+
+  const [primeLoading, setPrimeLoading] = useState(false);
+  const [matrixLoading, setMatrixLoading] = useState(false);
+  const [dotLoading, setDotLoading] = useState(false);
+
+  const [primeResult, setPrimeResult] = useState<CaseResult>(emptyCaseResult);
+  const [matrixResult, setMatrixResult] = useState<CaseResult>(emptyCaseResult);
+  const [dotResult, setDotResult] = useState<CaseResult>(emptyCaseResult);
 
   const [addonHealth, setAddonHealth] = useState<AddonHealth>({
     available: false,
   });
-  const [response, setResponse] = useState<BenchmarkResponseBody | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -93,21 +251,20 @@ export function BenchmarkConsole() {
     };
   }, []);
 
-  const workload = useMemo(() => {
-    if (algorithm === "prime-count") {
-      return { limit: primeLimit };
-    }
+  const isAnyLoading = primeLoading || matrixLoading || dotLoading;
 
-    if (algorithm === "matrix-multiply") {
-      return { matrixSize };
-    }
-
-    return { vectorSize };
-  }, [algorithm, matrixSize, primeLimit, vectorSize]);
-
-  async function runBenchmark(mode: BenchmarkMode): Promise<void> {
-    setIsLoading(true);
-    setErrorMessage(null);
+  async function runBenchmarkComparison(
+    algorithm: BenchmarkAlgorithm,
+    workload: BenchmarkRequestBody["workload"],
+    iterations: number,
+    setLoading: (value: boolean) => void,
+    setResult: (result: CaseResult) => void,
+    requestOptions?: {
+      resultMode?: MatrixResultMode;
+    },
+  ): Promise<void> {
+    setLoading(true);
+    setGlobalError(null);
 
     try {
       const res = await fetch("/api/benchmark", {
@@ -117,9 +274,11 @@ export function BenchmarkConsole() {
         },
         body: JSON.stringify({
           algorithm,
-          implementation: mode,
+          implementation: "compare",
           iterations,
           timeoutMs,
+          rustBatching,
+          resultMode: requestOptions?.resultMode,
           workload,
         }),
       });
@@ -127,170 +286,415 @@ export function BenchmarkConsole() {
       const payload = (await res.json()) as Partial<BenchmarkResponseBody>;
 
       if (!payload || !Array.isArray(payload.runs)) {
-        setResponse(null);
-        setErrorMessage(
-          "Unexpected response contract from benchmark endpoint.",
-        );
+        setResult({
+          ...emptyCaseResult,
+          error: "Unexpected response contract from benchmark endpoint.",
+        });
         return;
       }
 
       const typedPayload = payload as BenchmarkResponseBody;
-      setResponse(typedPayload);
       setAddonHealth(typedPayload.addon);
 
-      if (!typedPayload.ok) {
-        setErrorMessage(
-          typedPayload.error?.message ??
-            "One or more benchmark runs failed. See result cards for details.",
-        );
+      const jsRun = findRun(typedPayload.runs, "js");
+      const rustRun = findRun(typedPayload.runs, "rust");
+
+      const jsTime = jsRun?.durationMs ?? null;
+      const rustTime = rustRun?.durationMs ?? null;
+
+      const caseError =
+        typedPayload.error?.message ??
+        jsRun?.error ??
+        rustRun?.error ??
+        (typedPayload.ok ? null : "Benchmark failed.");
+
+      setResult({
+        jsTime,
+        rustTime,
+        jsComputeMs: jsRun?.computeMs ?? null,
+        rustComputeMs: rustRun?.computeMs ?? null,
+        jsTransferMs: jsRun?.transferMs ?? null,
+        rustTransferMs: rustRun?.transferMs ?? null,
+        jsSummary: jsRun?.resultSummary ?? null,
+        rustSummary: rustRun?.resultSummary ?? null,
+        speedup: calculateSpeedup(jsTime, rustTime),
+        rustBatchMode: rustRun?.batchMode ?? null,
+        rustCallbackCalls: rustRun?.callbackCalls ?? null,
+        requestId: typedPayload.requestId,
+        error: caseError,
+      });
+
+      if (caseError) {
+        setGlobalError(caseError);
       }
     } catch {
-      setResponse(null);
-      setErrorMessage(
-        "Benchmark request failed. Verify the dev server is running.",
-      );
+      const message =
+        "Benchmark request failed. Verify the dev server is running.";
+      setResult({
+        ...emptyCaseResult,
+        error: message,
+      });
+      setGlobalError(message);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   }
 
+  const runPrimeComparison = () =>
+    runBenchmarkComparison(
+      "prime-count",
+      { limit: primeLimit },
+      primeIterations,
+      setPrimeLoading,
+      setPrimeResult,
+    );
+
+  const runMatrixComparison = () =>
+    runBenchmarkComparison(
+      "matrix-multiply",
+      { matrixSize },
+      matrixIterations,
+      setMatrixLoading,
+      setMatrixResult,
+      {
+        resultMode: matrixResultMode,
+      },
+    );
+
+  const runDotComparison = () =>
+    runBenchmarkComparison(
+      "dot-product",
+      { vectorSize },
+      dotIterations,
+      setDotLoading,
+      setDotResult,
+    );
+
   return (
-    <section className="mt-6 grid gap-5 lg:grid-cols-[1.05fr_1fr]">
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-xl font-semibold text-gray-900">
-            Benchmark Controls
-          </h2>
-          <div className="flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs text-gray-600">
-            <span
-              className={`inline-block h-2.5 w-2.5 rounded-full ${
-                addonHealth.available ? "bg-emerald-400" : "bg-rose-400"
-              }`}
-            />
-            <span>
-              Native addon: {addonHealth.available ? "Ready" : "Unavailable"}
+    <div className="min-h-screen bg-linear-to-br from-slate-50 to-slate-100 p-4 sm:p-8">
+      <div className="max-w-6xl mx-auto">
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2 flex items-center justify-center gap-3">
+            next-rust-deep Template
+            <a
+              href="https://github.com/emirufak/next-rust-deep"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 px-3 py-1 bg-gray-800 text-white text-sm rounded-full hover:bg-gray-700 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
+              </svg>
+              GitHub
+            </a>
+          </h1>
+          <div className="flex flex-wrap justify-center gap-4 text-gray-500 text-sm">
+            <span className="whitespace-nowrap">
+              Node runtime | NAPI-RS addon | JS vs Rust comparisons
+            </span>
+            <span className="flex items-center gap-1 whitespace-nowrap">
+              Addon: <span className="font-bold text-gray-600">{addonHealth.available ? "Yes" : "No"}</span>
+            </span>
+            <span className="flex items-center gap-1 whitespace-nowrap">
+              Timeout: <span className="font-bold text-gray-600">{timeoutMs} ms</span>
+            </span>
+            <span className="flex items-center gap-1 whitespace-nowrap">
+              Rust batching: <span className="font-bold text-gray-600">{rustBatching}</span>
+            </span>
+            <span className="flex items-center gap-1 whitespace-nowrap">
+              Matrix mode: <span className="font-bold text-gray-600">{matrixResultMode}</span>
+            </span>
+            <span className="flex items-center gap-1 whitespace-nowrap">
+              Status: <span className="font-bold text-gray-600">{isAnyLoading ? "Running" : "Ready"}</span>
             </span>
           </div>
         </div>
 
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-2">
-            <span className="text-xs tracking-[0.16em] text-gray-500 uppercase">
-              Algorithm
-            </span>
-            <select
-              value={algorithm}
-              onChange={(event) =>
-                setAlgorithm(event.target.value as BenchmarkAlgorithm)
-              }
-              className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-gray-500"
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 min-h-88 flex flex-col">
+            <h2 className="text-xl font-bold text-blue-600 mb-1 flex items-center gap-2">
+              Prime Counting
+            </h2>
+            <p className="text-sm text-gray-500 mb-3">
+              Compare JS baseline and Rust addon with the same upper limit.
+            </p>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-sm text-gray-500">Prime limit</label>
+                <input
+                  type="number"
+                  min={WORKLOAD_LIMITS.primeLimit.min}
+                  max={WORKLOAD_LIMITS.primeLimit.max}
+                  value={primeLimit}
+                  onChange={(event) =>
+                    setPrimeLimit(
+                      clamp(
+                        parseIntSafe(event.target.value, primeLimit),
+                        WORKLOAD_LIMITS.primeLimit.min,
+                        WORKLOAD_LIMITS.primeLimit.max,
+                      ),
+                    )
+                  }
+                  className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-gray-500">Iterations</label>
+                <input
+                  type="number"
+                  min={WORKLOAD_LIMITS.iterations.min}
+                  max={WORKLOAD_LIMITS.iterations.max}
+                  value={primeIterations}
+                  onChange={(event) =>
+                    setPrimeIterations(
+                      clamp(
+                        parseIntSafe(event.target.value, primeIterations),
+                        WORKLOAD_LIMITS.iterations.min,
+                        WORKLOAD_LIMITS.iterations.max,
+                      ),
+                    )
+                  }
+                  className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800"
+                />
+              </div>
+            </div>
+            <button
+              onClick={runPrimeComparison}
+              disabled={primeLoading}
+              className="w-full py-3 bg-linear-to-r from-blue-500 to-blue-600 text-white rounded-lg font-medium hover:from-blue-600 hover:to-blue-700 disabled:opacity-50 transition-all mb-4"
             >
-              {algorithmOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+              {primeLoading ? "Running..." : "Run Comparison"}
+            </button>
 
-          {algorithm === "prime-count" && (
-            <label className="flex flex-col gap-2">
-              <span className="text-xs tracking-[0.16em] text-gray-500 uppercase">
-                Prime Limit
-              </span>
+            <div className="flex-1 flex flex-col justify-center">
+              <div className="grid grid-cols-2 gap-4 mb-2">
+                <div className="bg-yellow-50 p-3 rounded-lg text-center">
+                  <div className="text-sm text-yellow-700 font-medium">JavaScript</div>
+                  <div className="text-xl font-bold text-yellow-600">{primeResult.jsSummary ?? "-"}</div>
+                  <div className="text-sm text-yellow-600">{primeResult.jsTime?.toFixed(1) ?? "-"} ms</div>
+                </div>
+                <div className="bg-orange-50 p-3 rounded-lg text-center">
+                  <div className="text-sm text-orange-700 font-medium">Rust (NAPI)</div>
+                  <div className="text-xl font-bold text-orange-600">{primeResult.rustSummary ?? "-"}</div>
+                  <div className="text-sm text-orange-600">{primeResult.rustTime?.toFixed(1) ?? "-"} ms</div>
+                </div>
+              </div>
+              <div className="text-center text-green-600 font-medium min-h-6">
+                {getSpeedupLabel(primeResult.jsTime, primeResult.rustTime)}
+              </div>
+              <div className="text-center text-xs text-gray-500">
+                JS compute/transfer: {formatTiming(primeResult.jsComputeMs)} / {formatTiming(primeResult.jsTransferMs)}
+              </div>
+              <div className="text-center text-xs text-gray-500 mb-1">
+                Rust compute/transfer: {formatTiming(primeResult.rustComputeMs)} / {formatTiming(primeResult.rustTransferMs)}
+              </div>
+              {primeResult.error ? (
+                <p className="text-center text-xs text-red-600">{primeResult.error}</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 min-h-88 flex flex-col">
+            <h2 className="text-xl font-bold text-red-500 mb-1 flex items-center gap-2">
+              Matrix Multiplication
+            </h2>
+            <p className="text-sm text-gray-500 mb-3">
+              Multiply N x N matrices and compare JS against Rust addon output.
+            </p>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-sm text-gray-500">Matrix size (N x N)</label>
+                <input
+                  type="number"
+                  min={WORKLOAD_LIMITS.matrixSize.min}
+                  max={WORKLOAD_LIMITS.matrixSize.max}
+                  value={matrixSize}
+                  onChange={(event) =>
+                    setMatrixSize(
+                      clamp(
+                        parseIntSafe(event.target.value, matrixSize),
+                        WORKLOAD_LIMITS.matrixSize.min,
+                        WORKLOAD_LIMITS.matrixSize.max,
+                      ),
+                    )
+                  }
+                  className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-gray-500">Iterations</label>
               <input
                 type="number"
-                min={WORKLOAD_LIMITS.primeLimit.min}
-                max={WORKLOAD_LIMITS.primeLimit.max}
-                value={primeLimit}
+                  min={WORKLOAD_LIMITS.iterations.min}
+                  max={WORKLOAD_LIMITS.iterations.max}
+                  value={matrixIterations}
                 onChange={(event) =>
-                  setPrimeLimit(
-                    clamp(
-                      parseIntSafe(event.target.value, primeLimit),
-                      WORKLOAD_LIMITS.primeLimit.min,
-                      WORKLOAD_LIMITS.primeLimit.max,
-                    ),
-                  )
-                }
-                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-gray-500"
-              />
-            </label>
-          )}
+                    setMatrixIterations(
+                      clamp(
+                        parseIntSafe(event.target.value, matrixIterations),
+                        WORKLOAD_LIMITS.iterations.min,
+                        WORKLOAD_LIMITS.iterations.max,
+                      ),
+                    )
+                  }
+                  className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800"
+                />
+              </div>
+            </div>
+            <button
+              onClick={runMatrixComparison}
+              disabled={matrixLoading}
+              className="w-full py-3 bg-linear-to-r from-red-500 to-orange-500 text-white rounded-lg font-medium hover:from-red-600 hover:to-orange-600 disabled:opacity-50 transition-all mb-4"
+            >
+              {matrixLoading ? "Running..." : "Run Comparison"}
+            </button>
 
-          {algorithm === "matrix-multiply" && (
-            <label className="flex flex-col gap-2">
-              <span className="text-xs tracking-[0.16em] text-gray-500 uppercase">
-                Matrix Size (N x N)
-              </span>
-              <input
-                type="number"
-                min={WORKLOAD_LIMITS.matrixSize.min}
-                max={WORKLOAD_LIMITS.matrixSize.max}
-                value={matrixSize}
-                onChange={(event) =>
-                  setMatrixSize(
-                    clamp(
-                      parseIntSafe(event.target.value, matrixSize),
-                      WORKLOAD_LIMITS.matrixSize.min,
-                      WORKLOAD_LIMITS.matrixSize.max,
-                    ),
-                  )
-                }
-                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-gray-500"
-              />
-            </label>
-          )}
+            <div className="flex-1 flex flex-col justify-center">
+              <div className="grid grid-cols-2 gap-4 mb-2">
+                <div className="bg-yellow-50 p-3 rounded-lg text-center">
+                  <div className="text-sm text-yellow-700 font-medium">JavaScript</div>
+                  <div className="text-2xl font-bold text-yellow-600">
+                    {matrixResult.jsTime?.toFixed(1) ?? "-"}
+                    <span className="text-sm"> ms</span>
+                  </div>
+                </div>
+                <div className="bg-orange-50 p-3 rounded-lg text-center">
+                  <div className="text-sm text-orange-700 font-medium">Rust (NAPI)</div>
+                  <div className="text-2xl font-bold text-orange-600">
+                    {matrixResult.rustTime?.toFixed(1) ?? "-"}
+                    <span className="text-sm"> ms</span>
+                  </div>
+                </div>
+              </div>
+              <div className="text-center text-green-600 font-medium min-h-6">
+                {getSpeedupLabel(matrixResult.jsTime, matrixResult.rustTime)}
+              </div>
+              <div className="text-center text-xs text-gray-500 mb-1">
+                Result parity: {getParityLabel(matrixResult)}
+              </div>
+              <div className="text-center text-xs text-gray-500">
+                JS compute/transfer: {formatTiming(matrixResult.jsComputeMs)} / {formatTiming(matrixResult.jsTransferMs)}
+              </div>
+              <div className="text-center text-xs text-gray-500">
+                Rust compute/transfer: {formatTiming(matrixResult.rustComputeMs)} / {formatTiming(matrixResult.rustTransferMs)}
+              </div>
+              <div className="text-center text-xs text-gray-500 mb-1">
+                Rust batch: {matrixResult.rustBatchMode ?? "n/a"} ({matrixResult.rustCallbackCalls ?? 0} callback)
+              </div>
+              {matrixResult.error ? (
+                <p className="text-center text-xs text-red-600">{matrixResult.error}</p>
+              ) : null}
+            </div>
+          </div>
 
-          {algorithm === "dot-product" && (
-            <label className="flex flex-col gap-2">
-              <span className="text-xs tracking-[0.16em] text-gray-500 uppercase">
-                Vector Size
-              </span>
-              <input
-                type="number"
-                min={WORKLOAD_LIMITS.vectorSize.min}
-                max={WORKLOAD_LIMITS.vectorSize.max}
-                value={vectorSize}
-                onChange={(event) =>
-                  setVectorSize(
-                    clamp(
-                      parseIntSafe(event.target.value, vectorSize),
-                      WORKLOAD_LIMITS.vectorSize.min,
-                      WORKLOAD_LIMITS.vectorSize.max,
-                    ),
-                  )
-                }
-                className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-gray-500"
-              />
-            </label>
-          )}
+          <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 min-h-88 flex flex-col">
+            <h2 className="text-xl font-bold text-purple-600 mb-1 flex items-center gap-2">
+              Vector Dot Product
+            </h2>
+            <p className="text-sm text-gray-500 mb-3">
+              Process large vector workloads and compare JS and Rust timing.
+            </p>
+            <p className="text-xs text-gray-500 mb-3">
+              Includes JS to native data transfer cost for Rust calls.
+            </p>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-sm text-gray-500">Vector size</label>
+                <input
+                  type="number"
+                  min={WORKLOAD_LIMITS.vectorSize.min}
+                  max={WORKLOAD_LIMITS.vectorSize.max}
+                  value={vectorSize}
+                  onChange={(event) =>
+                    setVectorSize(
+                      clamp(
+                        parseIntSafe(event.target.value, vectorSize),
+                        WORKLOAD_LIMITS.vectorSize.min,
+                        WORKLOAD_LIMITS.vectorSize.max,
+                      ),
+                    )
+                  }
+                  className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800"
+                />
+              </div>
+              <div>
+                <label className="text-sm text-gray-500">Iterations</label>
+                <input
+                  type="number"
+                  min={WORKLOAD_LIMITS.iterations.min}
+                  max={WORKLOAD_LIMITS.iterations.max}
+                  value={dotIterations}
+                  onChange={(event) =>
+                    setDotIterations(
+                      clamp(
+                        parseIntSafe(event.target.value, dotIterations),
+                        WORKLOAD_LIMITS.iterations.min,
+                        WORKLOAD_LIMITS.iterations.max,
+                      ),
+                    )
+                  }
+                  className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800"
+                />
+              </div>
+            </div>
+            <button
+              onClick={runDotComparison}
+              disabled={dotLoading}
+              className="w-full py-3 bg-linear-to-r from-yellow-400 to-orange-500 text-white rounded-lg font-medium hover:from-yellow-500 hover:to-orange-600 disabled:opacity-50 transition-all mb-4"
+            >
+              {dotLoading ? "Running..." : "Run Comparison"}
+            </button>
 
-          <label className="flex flex-col gap-2">
-            <span className="text-xs tracking-[0.16em] text-gray-500 uppercase">
-              Iterations
-            </span>
-            <input
-              type="number"
-              min={WORKLOAD_LIMITS.iterations.min}
-              max={WORKLOAD_LIMITS.iterations.max}
-              value={iterations}
-              onChange={(event) =>
-                setIterations(
-                  clamp(
-                    parseIntSafe(event.target.value, iterations),
-                    WORKLOAD_LIMITS.iterations.min,
-                    WORKLOAD_LIMITS.iterations.max,
-                  ),
-                )
-              }
-              className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-gray-500"
-            />
-          </label>
+            <div className="flex-1 flex flex-col justify-center">
+              <div className="grid grid-cols-2 gap-4 mb-2">
+                <div className="bg-yellow-50 p-3 rounded-lg text-center">
+                  <div className="text-sm text-yellow-700 font-medium">JavaScript</div>
+                  <div className="text-2xl font-bold text-yellow-600">
+                    {dotResult.jsTime?.toFixed(1) ?? "-"}
+                    <span className="text-sm"> ms</span>
+                  </div>
+                </div>
+                <div className="bg-orange-50 p-3 rounded-lg text-center">
+                  <div className="text-sm text-orange-700 font-medium">Rust (NAPI)</div>
+                  <div className="text-2xl font-bold text-orange-600">
+                    {dotResult.rustTime?.toFixed(1) ?? "-"}
+                    <span className="text-sm"> ms</span>
+                  </div>
+                </div>
+              </div>
+              <div className="text-center text-green-600 font-medium min-h-6">
+                {getSpeedupLabel(dotResult.jsTime, dotResult.rustTime)}
+              </div>
+              <div className="text-center text-xs text-gray-500 mb-1">
+                Result parity: {getParityLabel(dotResult)}
+              </div>
+              <div className="text-center text-xs text-gray-500">
+                JS compute/transfer: {formatTiming(dotResult.jsComputeMs)} / {formatTiming(dotResult.jsTransferMs)}
+              </div>
+              <div className="text-center text-xs text-gray-500">
+                Rust compute/transfer: {formatTiming(dotResult.rustComputeMs)} / {formatTiming(dotResult.rustTransferMs)}
+              </div>
+              <div className="text-center text-xs text-gray-500 mb-1">
+                Rust batch: {dotResult.rustBatchMode ?? "n/a"} ({dotResult.rustCallbackCalls ?? 0} callback)
+              </div>
+              {dotResult.error ? (
+                <p className="text-center text-xs text-red-600">{dotResult.error}</p>
+              ) : null}
+            </div>
+          </div>
 
-          <label className="flex flex-col gap-2">
-            <span className="text-xs tracking-[0.16em] text-gray-500 uppercase">
-              Timeout (ms)
-            </span>
+          <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 min-h-88 flex flex-col">
+            <h2 className="text-xl font-bold text-teal-600 mb-1 flex items-center gap-2">
+              Native Addon Health
+            </h2>
+            <p className="text-sm text-gray-500 mb-4">
+              Verifies whether the Rust native binary can be loaded by the Node runtime.
+            </p>
+            <p className="text-xs text-gray-500 mb-4">
+              If this card is unavailable, Rust benchmarks fail and only JS side can run.
+            </p>
+
+            <label className="text-sm text-gray-500 mb-2">Timeout (ms)</label>
             <input
               type="number"
               min={WORKLOAD_LIMITS.timeoutMs.min}
@@ -305,106 +709,64 @@ export function BenchmarkConsole() {
                   ),
                 )
               }
-              className="rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-gray-500"
+              className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800 mb-4"
             />
-          </label>
-        </div>
 
-        <div className="mt-6 grid gap-3 sm:grid-cols-3">
-          <button
-            type="button"
-            disabled={isLoading}
-            onClick={() => runBenchmark("js")}
-            className="inline-flex items-center justify-center rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-800 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Run JS Baseline
-          </button>
-          <button
-            type="button"
-            disabled={isLoading}
-            onClick={() => runBenchmark("rust")}
-            className="inline-flex items-center justify-center rounded-xl border border-blue-600 bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Run Rust NAPI
-          </button>
-          <button
-            type="button"
-            disabled={isLoading}
-            onClick={() => runBenchmark("compare")}
-            className="inline-flex items-center justify-center rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Run Comparative Benchmark
-          </button>
-        </div>
+            <label className="text-sm text-gray-500 mb-2">Rust batching mode</label>
+            <select
+              value={rustBatching}
+              onChange={(event) =>
+                setRustBatching(event.target.value as RustBatchingMode)
+              }
+              className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800 mb-3"
+            >
+              <option value="native">native</option>
+              <option value="none">none</option>
+            </select>
 
-        {errorMessage ? (
-          <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {errorMessage}
-          </p>
-        ) : null}
-      </div>
+            <label className="text-sm text-gray-500 mb-2">Matrix result mode</label>
+            <select
+              value={matrixResultMode}
+              onChange={(event) =>
+                setMatrixResultMode(event.target.value as MatrixResultMode)
+              }
+              className="w-full p-2 border rounded-lg bg-gray-50 text-gray-800 mb-4"
+            >
+              <option value="summary">summary</option>
+              <option value="full">full</option>
+            </select>
 
-      <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
-        <h3 className="text-lg font-semibold text-gray-900">Results</h3>
-        {isLoading ? (
-          <p className="mt-4 text-sm text-gray-600">Running benchmark...</p>
-        ) : null}
-
-        {!isLoading && !response ? (
-          <p className="mt-4 text-sm text-gray-600">
-            Choose parameters and run one of the benchmark actions.
-          </p>
-        ) : null}
-
-        {response ? (
-          <div className="mt-4 space-y-3">
-            {response.runs.map((run) => (
-              <article
-                key={`${run.implementation}-${run.inputSize}`}
-                className="rounded-xl border border-gray-200 bg-gray-50 p-3"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-semibold tracking-[0.12em] text-gray-700 uppercase">
-                    {run.implementation}
-                  </p>
-                  <p className="font-mono text-sm text-gray-800">
-                    {run.durationMs.toFixed(3)} ms
-                  </p>
+            <div className="flex-1 flex items-center justify-center">
+              <div className="bg-green-50 rounded-lg p-6 text-center w-full">
+                <div className="text-green-600 font-medium mb-1">
+                  {addonHealth.available ? "Addon Available" : "Addon Unavailable"}
                 </div>
-                <p className="mt-2 text-xs text-gray-500">
-                  Input: {run.inputSize.toLocaleString()}
-                </p>
-                <p className="mt-1 text-xs text-gray-600">
-                  Summary: {run.resultSummary}
-                </p>
-                {run.error ? (
-                  <p className="mt-2 text-xs text-red-600">
-                    Error: {run.error}
-                  </p>
+                <div className="text-xs text-green-700 mb-2">
+                  Endpoint: /api/health/addon
+                </div>
+                <div className="text-xs text-green-700 mb-2 break-all" title={primeResult.requestId ?? undefined}>
+                  Prime request: {shortRequestId(primeResult.requestId)}
+                </div>
+                <div className="text-xs text-green-700 mb-2 break-all" title={matrixResult.requestId ?? undefined}>
+                  Matrix request: {shortRequestId(matrixResult.requestId)}
+                </div>
+                <div className="text-xs text-green-700 mb-2 break-all" title={dotResult.requestId ?? undefined}>
+                  Dot request: {shortRequestId(dotResult.requestId)}
+                </div>
+                {addonHealth.error ? (
+                  <div className="text-xs text-red-600 mt-3">{addonHealth.error}</div>
                 ) : null}
-              </article>
-            ))}
+              </div>
+            </div>
+          </div>
+        </div>
 
-            {response.comparison ? (
-              <article className="rounded-xl border border-blue-200 bg-blue-50 p-3">
-                <p className="text-xs tracking-[0.15em] text-blue-700 uppercase">
-                  Speedup Analysis
-                </p>
-                <p className="mt-1 text-sm font-semibold text-blue-900">
-                  Faster: {response.comparison.faster.toUpperCase()}
-                </p>
-                <p className="mt-1 text-xs text-blue-800">
-                  Speedup Ratio: {response.comparison.speedupRatio ?? "n/a"}
-                </p>
-              </article>
-            ) : null}
-
-            <p className="text-xs text-gray-500">
-              Request: {response.requestId} | Iterations: {response.iterations}
-            </p>
+        {globalError ? (
+          <div className="mt-6 p-4 bg-red-50 text-red-600 rounded-lg text-center">
+            Error: {globalError}
           </div>
         ) : null}
       </div>
-    </section>
+    </div>
   );
 }
