@@ -11,14 +11,25 @@ export interface IterationTimingMetrics {
   transferMs?: number;
 }
 
+export interface TimedIterationsOptions {
+  iterationTimeoutMs?: number;
+}
+
 export type IterationMetricsExtractor<T> = (
   result: T,
   elapsedMs: number,
 ) => IterationTimingMetrics;
 
 export class BenchmarkTimeoutError extends Error {
-  constructor(readonly timeoutMs: number) {
-    super(`Benchmark exceeded timeout budget of ${timeoutMs}ms.`);
+  constructor(
+    readonly timeoutMs: number,
+    readonly scope: "total" | "iteration" = "total",
+  ) {
+    super(
+      scope === "iteration"
+        ? `Benchmark iteration exceeded timeout budget of ${timeoutMs}ms.`
+        : `Benchmark exceeded total timeout budget of ${timeoutMs}ms.`,
+    );
     this.name = "BenchmarkTimeoutError";
   }
 }
@@ -28,17 +39,40 @@ export async function runTimedIterations<T>(
   iterations: number,
   timeoutMs: number,
   metricsExtractor?: IterationMetricsExtractor<T>,
+  options?: TimedIterationsOptions,
 ): Promise<TimedIterationsResult<T>> {
   const samples: number[] = [];
   const computeSamples: number[] = [];
   const transferSamples: number[] = [];
   let lastResult: T | undefined;
   const globalStart = performance.now();
+  const iterationTimeoutMs = options?.iterationTimeoutMs ?? timeoutMs;
 
   for (let index = 0; index < iterations; index += 1) {
     const startedAt = performance.now();
-    lastResult = await callback();
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    try {
+      lastResult = await Promise.race<T>([
+        Promise.resolve().then(callback),
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(new BenchmarkTimeoutError(iterationTimeoutMs, "iteration"));
+          }, iterationTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+
     const elapsed = performance.now() - startedAt;
+
+    // Sync CPU-heavy callbacks can block the event loop and bypass Promise.race timer firing.
+    if (elapsed > iterationTimeoutMs) {
+      throw new BenchmarkTimeoutError(iterationTimeoutMs, "iteration");
+    }
 
     samples.push(elapsed);
 
@@ -56,7 +90,7 @@ export async function runTimedIterations<T>(
 
     const totalElapsed = performance.now() - globalStart;
     if (totalElapsed > timeoutMs) {
-      throw new BenchmarkTimeoutError(timeoutMs);
+      throw new BenchmarkTimeoutError(timeoutMs, "total");
     }
   }
 
