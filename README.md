@@ -1,3 +1,6 @@
+
+<img width="1206" height="874" alt="rust-deep" src="https://github.com/user-attachments/assets/e4f2257d-887d-407f-bb86-dc039578877b" />
+
 # next-rust-deep
 
 next-rust-deep is a production-oriented Next.js 16 + React 19 project for benchmarking server-side JavaScript against a Rust native addon (NAPI-RS + rayon).
