@@ -21,7 +21,7 @@
     "rust:test": "cargo test --manifest-path rust-addon/Cargo.toml",
     "rust:fmt:check": "cargo fmt --manifest-path rust-addon/Cargo.toml --all -- --check",
     "rust:clippy": "cargo clippy --manifest-path rust-addon/Cargo.toml --all-targets -- -D warnings -D clippy::pedantic",
-    "rust:audit": "cargo audit"
+    "rust:audit": "cargo audit --file rust-addon/Cargo.lock"
   },
   "dependencies": {
     "@next-rust-deep/native-addon": "workspace:*",

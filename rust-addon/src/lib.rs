@@ -284,7 +284,8 @@ fn matrix_summary_result_from_raw(
     summary: MatrixSummaryRaw,
     compute_ms: f64,
 ) -> Result<MatrixSummaryTimedResult> {
-    let length = u32::try_from(summary.length).map_err(|_| error("matrix summary length overflow"))?;
+    let length =
+        u32::try_from(summary.length).map_err(|_| error("matrix summary length overflow"))?;
 
     Ok(MatrixSummaryTimedResult {
         length,
