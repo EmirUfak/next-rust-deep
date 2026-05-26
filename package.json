@@ -32,6 +32,7 @@
     "zod": "^3.24.4"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.4",
     "@tailwindcss/postcss": "^4.3.0",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -54,7 +55,6 @@
     "unrs-resolver"
   ],
   "overrides": {
-    "postcss": "8.5.15",
-    "brace-expansion": "5.0.6"
+    "postcss": "8.5.15"
   }
 }
