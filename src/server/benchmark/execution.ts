@@ -1,12 +1,4 @@
 import {
-  countPrimesJs,
-  dotProductJs,
-  multiplyMatricesJs,
-  multiplyMatricesSummaryJs,
-  summarizeMatrixSummary,
-  summarizeResult,
-} from "@/lib/benchmark-js";
-import {
   BenchmarkTimeoutError,
   runTimedIterations,
 } from "@/lib/benchmark-runner";
@@ -20,16 +12,15 @@ import {
 } from "@/lib/benchmark-types";
 import {
   NativeAddonUnavailableError,
-  runRustDotProductBatchTimed,
-  runRustDotProductTimed,
-  runRustMatrixMultiply,
-  runRustMatrixSummaryBatchTimed,
-  runRustMatrixSummaryTimed,
-  runRustPrimeCountBatchTimed,
-  runRustPrimeCountTimed,
 } from "@/server/native-addon-bridge";
 
-import type { ExecutionResult, PreparedInput } from "./types";
+import type { PreparedInput } from "./types";
+import {
+  executeJsWorkload,
+  executeRustNativeBatchWorkload,
+  executeRustSingleWorkload,
+  supportsNativeBatch,
+} from "./workloads";
 
 interface RunBenchmarkImplementationsOptions {
   benchmarkRequest: BenchmarkRequestBody;
@@ -37,149 +28,6 @@ interface RunBenchmarkImplementationsOptions {
   rustBatching: RustBatchingMode;
   matrixResultMode: MatrixResultMode | undefined;
   preparedInput: PreparedInput;
-}
-
-function executeJs(
-  prepared: PreparedInput,
-  matrixResultMode: MatrixResultMode | undefined,
-): ExecutionResult {
-  switch (prepared.algorithm) {
-    case "prime-count": {
-      const value = countPrimesJs(prepared.limit);
-      return {
-        resultSummary: summarizeResult(value),
-      };
-    }
-
-    case "matrix-multiply": {
-      if (matrixResultMode === "summary") {
-        const summary = multiplyMatricesSummaryJs(
-          prepared.left,
-          prepared.right,
-          prepared.size,
-        );
-
-        return {
-          resultSummary: summarizeMatrixSummary(summary),
-        };
-      }
-
-      const value = multiplyMatricesJs(prepared.left, prepared.right, prepared.size);
-      return {
-        resultSummary: summarizeResult(value),
-      };
-    }
-
-    case "dot-product": {
-      const value = dotProductJs(prepared.left, prepared.right);
-      return {
-        resultSummary: summarizeResult(value),
-      };
-    }
-  }
-}
-
-async function executeRustSingle(
-  prepared: PreparedInput,
-  matrixResultMode: MatrixResultMode | undefined,
-): Promise<ExecutionResult> {
-  switch (prepared.algorithm) {
-    case "prime-count": {
-      const timed = await runRustPrimeCountTimed(prepared.limit);
-      return {
-        resultSummary: summarizeResult(timed.value),
-        computeMs: timed.computeMs,
-      };
-    }
-
-    case "matrix-multiply": {
-      if (matrixResultMode === "summary") {
-        const timed = await runRustMatrixSummaryTimed(
-          prepared.left,
-          prepared.right,
-          prepared.size,
-        );
-
-        return {
-          resultSummary: summarizeMatrixSummary({
-            length: timed.length,
-            first: timed.first,
-            checksum: timed.checksum,
-          }),
-          computeMs: timed.computeMs,
-        };
-      }
-
-      const value = await runRustMatrixMultiply(
-        prepared.left,
-        prepared.right,
-        prepared.size,
-      );
-      return {
-        resultSummary: summarizeResult(value),
-      };
-    }
-
-    case "dot-product": {
-      const timed = await runRustDotProductTimed(prepared.left, prepared.right);
-      return {
-        resultSummary: summarizeResult(timed.value),
-        computeMs: timed.computeMs,
-      };
-    }
-  }
-}
-
-async function executeRustNativeBatch(
-  prepared: PreparedInput,
-  iterations: number,
-  matrixResultMode: MatrixResultMode | undefined,
-): Promise<ExecutionResult> {
-  switch (prepared.algorithm) {
-    case "prime-count": {
-      const timed = await runRustPrimeCountBatchTimed(prepared.limit, iterations);
-      return {
-        resultSummary: summarizeResult(timed.value),
-        computeMs: timed.computeMs,
-      };
-    }
-
-    case "matrix-multiply": {
-      if (matrixResultMode !== "summary") {
-        throw new NativeAddonUnavailableError(
-          "Native batching is only supported for matrix summary mode.",
-        );
-      }
-
-      const timed = await runRustMatrixSummaryBatchTimed(
-        prepared.left,
-        prepared.right,
-        prepared.size,
-        iterations,
-      );
-
-      return {
-        resultSummary: summarizeMatrixSummary({
-          length: timed.length,
-          first: timed.first,
-          checksum: timed.checksum,
-        }),
-        computeMs: timed.computeMs,
-      };
-    }
-
-    case "dot-product": {
-      const timed = await runRustDotProductBatchTimed(
-        prepared.left,
-        prepared.right,
-        iterations,
-      );
-      return {
-        resultSummary: summarizeResult(timed.value),
-        computeMs: timed.computeMs,
-      };
-    }
-  }
 }
 
 function shouldUseNativeBatch(
@@ -201,7 +49,7 @@ function shouldUseNativeBatch(
     return false;
   }
 
-  if (algorithm === "matrix-multiply" && matrixResultMode !== "summary") {
+  if (!supportsNativeBatch(algorithm, matrixResultMode)) {
     return false;
   }
 
@@ -254,7 +102,7 @@ export async function runBenchmarkImplementations(
     try {
       if (batched) {
         const startedAt = performance.now();
-        const result = await executeRustNativeBatch(
+        const result = await executeRustNativeBatchWorkload(
           preparedInput,
           benchmarkRequest.iterations,
           matrixResultMode,
@@ -294,8 +142,8 @@ export async function runBenchmarkImplementations(
       const timed = await runTimedIterations(
         () =>
           implementation === "js"
-            ? executeJs(preparedInput, matrixResultMode)
-            : executeRustSingle(preparedInput, matrixResultMode),
+            ? executeJsWorkload(preparedInput, matrixResultMode)
+            : executeRustSingleWorkload(preparedInput, matrixResultMode),
         benchmarkRequest.iterations,
         timeoutMs,
         (result, elapsedMs) => {

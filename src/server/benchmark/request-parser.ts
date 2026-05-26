@@ -1,7 +1,7 @@
 import { parseBenchmarkRequest } from "@/lib/validation";
 import { WORKLOAD_LIMITS } from "@/lib/benchmark-types";
 
-import { prepareInput, resolveMatrixResultMode } from "./prepare";
+import { prepareInput, resolveMatrixResultMode } from "./workloads";
 import type { ParsedBenchmarkRouteRequest } from "./types";
 
 const BODY_TEXT_ENCODER = new TextEncoder();
