@@ -3,9 +3,12 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   serverExternalPackages: ["@next-rust-deep/native-addon"],
   webpack: (config) => {
-    // webpack's default WASM-based xxhash64 (WasmHash) crashes in this
-    // Node/CI environment ("Cannot read properties of undefined (reading
-    // 'length')"). Force the JS/crypto hash to avoid the WASM path.
+    // Next/webpack's default content hash uses a bundled WASM xxhash64
+    // implementation (WasmHash). Hashing this project's native .node addon
+    // asset trips a bug in it -> "Cannot read properties of undefined
+    // (reading 'length')" and the build crashes. The JS/crypto sha256 hasher
+    // does not have this problem. (next-rust-basic never hits this because it
+    // ships WASM, not a native .node binary.)
     config.output.hashFunction = "sha256";
 
     config.module.rules.push({
