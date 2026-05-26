@@ -45,7 +45,7 @@ jobs:
           cargo --version
 
       - name: Lint TypeScript
-        run: node ./node_modules/eslint/bin/eslint.js src tests
+        run: node ./node_modules/eslint/bin/eslint.js --config eslint.ci.config.mjs src tests
 
       - name: Run tests
         run: bun run test
