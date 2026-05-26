@@ -40,12 +40,12 @@ jobs:
         run: |
           node --version
           bun --version
-          bun x eslint --version
+          node ./node_modules/eslint/bin/eslint.js --version
           rustc --version
           cargo --version
 
       - name: Lint TypeScript
-        run: bun run lint:ts
+        run: node ./node_modules/eslint/bin/eslint.js src tests
 
       - name: Run tests
         run: bun run test
