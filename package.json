@@ -13,7 +13,7 @@
     "start": "node ./node_modules/next/dist/bin/next start",
     "build:rust": "bun run --cwd rust-addon build",
     "lint": "bun run lint:ts && bun run rust:clippy",
-    "lint:ts": "eslint .",
+    "lint:ts": "eslint src tests",
     "test": "vitest run && bun run rust:test",
     "test:watch": "vitest --watch",
     "format": "prettier . --write && cargo fmt --manifest-path rust-addon/Cargo.toml --all",

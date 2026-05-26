@@ -36,6 +36,14 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
+      - name: Print tool versions
+        run: |
+          node --version
+          bun --version
+          bun x eslint --version
+          rustc --version
+          cargo --version
+
       - name: Lint TypeScript
         run: bun run lint:ts
 
